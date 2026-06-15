@@ -145,17 +145,13 @@ func (s *Syncer) doSync(ctx context.Context) error {
 
 	s.log.Info("geoip: starting sync")
 
-	mmCtx, endMM := s.span(ctx, "geoip.downloadMaxMind")
-	mm, err := maxmind.Fetch(mmCtx, s.client, s.cfg.MaxMindLicenseKey)
-	endMM(err)
+	mm, err := maxmind.Fetch(ctx, s.client, s.cfg.MaxMindLicenseKey, s.startSpan)
 	if err != nil {
 		return fmt.Errorf("maxmind download: %w", err)
 	}
 	s.log.Info("geoip: maxmind parsed", "v4_blocks", len(mm.V4), "v6_blocks", len(mm.V6))
 
-	dcCtx, endDC := s.span(ctx, "geoip.fetchDatacenterCIDRs")
-	dcV4, dcV6, providerErrs := datacenter.Fetch(dcCtx, s.client, s.cfg.Providers)
-	endDC(nil)
+	dcV4, dcV6, providerErrs := datacenter.Fetch(ctx, s.client, s.cfg.Providers, s.startSpan)
 	for _, e := range providerErrs {
 		s.log.Warn("geoip: datacenter provider fetch failed (continuing)", "error", e)
 	}
@@ -166,6 +162,7 @@ func (s *Syncer) doSync(ctx context.Context) error {
 
 	if err := runSanityChecks(
 		s.cfg.OutputDir,
+		len(s.cfg.Providers),
 		v4Interesting, v6Interesting,
 		len(dcV4)+len(dcV6),
 		s.trustedAlpha2,
@@ -196,12 +193,13 @@ func (s *Syncer) doSync(ctx context.Context) error {
 		return fmt.Errorf("generate files: %w", err)
 	}
 
-	if err := nftables.Install(tmpDir, nftables.InstallConfig{
+	if err := nftables.Install(ctx, tmpDir, nftables.InstallConfig{
 		OutputDir:        s.cfg.OutputDir,
 		NFTablesConfPath: s.cfg.NFTablesConfPath,
 		IncludeDir:       s.cfg.IncludeDir,
 		ReloadCommand:    s.cfg.ReloadCommand,
 		SkipValidate:     s.cfg.SkipValidate,
+		StartSpan:        s.startSpan,
 	}); err != nil {
 		return fmt.Errorf("validate/install: %w", err)
 	}

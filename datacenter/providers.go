@@ -202,6 +202,9 @@ func fetchBytes(ctx context.Context, client *http.Client, url string) ([]byte, e
 	if err != nil {
 		return nil, err
 	}
+	// Some endpoints (notably the Microsoft download page) reject the default Go user
+	// agent, so identify ourselves explicitly.
+	req.Header.Set("User-Agent", "nftables-geoip-go/1 (+https://github.com/ConnorsApps/nftables-geoip-go)")
 	resp, err := client.Do(req)
 	if err != nil {
 		return nil, err

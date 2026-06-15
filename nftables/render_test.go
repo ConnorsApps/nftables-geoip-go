@@ -83,6 +83,40 @@ func TestGenerateMapFileFiltered(t *testing.T) {
 	}
 }
 
+func TestGenerateMapFileEmpty(t *testing.T) {
+	dir := t.TempDir()
+	blocks := []country.Block{
+		{Network: netip.MustParsePrefix("10.0.0.0/8"), Alpha2: "US"},
+	}
+
+	// Filter excludes every block, so no elements should be written. An empty
+	// `elements = {}` block would be invalid nft.
+	if err := generateMapFile(dir, "empty.nft", "geoip4", "ipv4_addr", blocks, trustedSet("DE")); err != nil {
+		t.Fatal(err)
+	}
+	want := "map geoip4 {\n" +
+		"\ttype ipv4_addr : mark\n" +
+		"\tflags interval\n" +
+		"}\n"
+	if got := readGen(t, dir, "empty.nft"); got != want {
+		t.Errorf("empty map mismatch:\n got: %q\nwant: %q", got, want)
+	}
+}
+
+func TestGenerateDatacenterSetEmpty(t *testing.T) {
+	dir := t.TempDir()
+	if err := generateDatacenterSet(dir, "empty.nft", "datacenter4", "ipv4_addr", nil); err != nil {
+		t.Fatal(err)
+	}
+	want := "set datacenter4 {\n" +
+		"\ttype ipv4_addr\n" +
+		"\tflags interval\n" +
+		"}\n"
+	if got := readGen(t, dir, "empty.nft"); got != want {
+		t.Errorf("empty set mismatch:\n got: %q\nwant: %q", got, want)
+	}
+}
+
 func TestGenerateDatacenterSet(t *testing.T) {
 	dir := t.TempDir()
 	pfxs := prefixes(t, "10.0.0.0/8", "192.168.0.0/16")

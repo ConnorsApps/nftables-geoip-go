@@ -3,6 +3,10 @@ package maxmind
 import (
 	"archive/zip"
 	"bytes"
+	"context"
+	"fmt"
+	"net/http"
+	"strings"
 	"testing"
 
 	"github.com/ConnorsApps/nftables-geoip-go/country"
@@ -103,6 +107,45 @@ func TestParse(t *testing.T) {
 				t.Errorf("DE continent = %q, want europe", info.Continent)
 			}
 		}
+	}
+}
+
+// errRoundTripper fails every request, mimicking a transport-level error. net/http
+// wraps the returned error in a *url.Error that embeds the full request URL.
+type errRoundTripper struct{}
+
+func (errRoundTripper) RoundTrip(*http.Request) (*http.Response, error) {
+	return nil, fmt.Errorf("simulated dial failure")
+}
+
+func TestFetchRedactsLicenseKey(t *testing.T) {
+	const key = "super-secret-license-key"
+	client := &http.Client{Transport: errRoundTripper{}}
+
+	_, err := Fetch(context.Background(), client, key, nil)
+	if err == nil {
+		t.Fatal("expected an error from the failing transport")
+	}
+	if strings.Contains(err.Error(), key) {
+		t.Fatalf("license key leaked into error: %q", err.Error())
+	}
+	if !strings.Contains(err.Error(), "REDACTED") {
+		t.Errorf("expected REDACTED placeholder in error, got %q", err.Error())
+	}
+}
+
+func TestRedactKey(t *testing.T) {
+	err := fmt.Errorf(`Get "https://download.maxmind.com/?license_key=abc123": dial failed`)
+	got := redactKey(err, "abc123")
+	if strings.Contains(got.Error(), "abc123") {
+		t.Fatalf("key not redacted: %q", got.Error())
+	}
+	// Empty key and nil error are passed through unchanged.
+	if redactKey(nil, "abc123") != nil {
+		t.Error("nil error should stay nil")
+	}
+	if got := redactKey(err, ""); got != err {
+		t.Error("empty key should return the original error unchanged")
 	}
 }
 

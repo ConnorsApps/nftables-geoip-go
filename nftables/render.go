@@ -122,20 +122,27 @@ func generateMapFile(dir, filename, mapName, addrType string, blocks []country.B
 	buf.WriteString(" {\n")
 	fmt.Fprintf(&buf, "\ttype %s : mark\n", addrType)
 	buf.WriteString("\tflags interval\n")
-	buf.WriteString("\telements = {\n")
 
+	// Collect the matching elements first: an empty `elements = { }` block is invalid
+	// nft syntax, so when there are none we emit only the declaration.
+	var elems bytes.Buffer
 	first := true
 	for _, b := range blocks {
 		if filterAlpha2 != nil && !filterAlpha2[b.Alpha2] {
 			continue
 		}
 		if !first {
-			buf.WriteString(",\n")
+			elems.WriteString(",\n")
 		}
-		fmt.Fprintf(&buf, "\t\t%s : $%s", b.Network.String(), b.Alpha2)
+		fmt.Fprintf(&elems, "\t\t%s : $%s", b.Network.String(), b.Alpha2)
 		first = false
 	}
-	buf.WriteString("\n\t}\n}\n")
+	if elems.Len() > 0 {
+		buf.WriteString("\telements = {\n")
+		buf.Write(elems.Bytes())
+		buf.WriteString("\n\t}\n")
+	}
+	buf.WriteString("}\n")
 
 	return os.WriteFile(filepath.Join(dir, filename), buf.Bytes(), 0644)
 }
@@ -147,15 +154,20 @@ func generateDatacenterSet(dir, filename, setName, addrType string, prefixes []n
 	buf.WriteString(" {\n")
 	fmt.Fprintf(&buf, "\ttype %s\n", addrType)
 	buf.WriteString("\tflags interval\n")
-	buf.WriteString("\telements = {\n")
 
-	for i, pfx := range prefixes {
-		if i > 0 {
-			buf.WriteString(",\n")
+	// An empty `elements = { }` block is invalid nft syntax, so omit it entirely when
+	// there are no prefixes (e.g. -providers none, or a provider with no IPv6 ranges).
+	if len(prefixes) > 0 {
+		buf.WriteString("\telements = {\n")
+		for i, pfx := range prefixes {
+			if i > 0 {
+				buf.WriteString(",\n")
+			}
+			fmt.Fprintf(&buf, "\t\t%s", pfx.String())
 		}
-		fmt.Fprintf(&buf, "\t\t%s", pfx.String())
+		buf.WriteString("\n\t}\n")
 	}
-	buf.WriteString("\n\t}\n}\n")
+	buf.WriteString("}\n")
 
 	return os.WriteFile(filepath.Join(dir, filename), buf.Bytes(), 0644)
 }

@@ -2,6 +2,7 @@ package nftables
 
 import (
 	"bytes"
+	"context"
 	"fmt"
 	"io"
 	"os"
@@ -9,6 +10,16 @@ import (
 	"path/filepath"
 	"strings"
 )
+
+// SpanHook starts a named span and returns an end function; see geoip.SpanHook.
+type SpanHook = func(ctx context.Context, name string) (context.Context, func(error))
+
+func callSpan(ctx context.Context, h SpanHook, name string) (context.Context, func(error)) {
+	if h == nil {
+		return ctx, func(error) {}
+	}
+	return h(ctx, name)
+}
 
 // InstallConfig controls how generated files are validated and installed.
 type InstallConfig struct {
@@ -23,15 +34,20 @@ type InstallConfig struct {
 	ReloadCommand []string
 	// SkipValidate skips the `nft -c` check and reload (for machines without nftables).
 	SkipValidate bool
+	// StartSpan is optional; when set, spans are recorded for validate, copy, and reload.
+	StartSpan SpanHook
 }
 
 // Install validates the freshly generated files in srcDir against the live nftables
 // config, then copies them into cfg.OutputDir and runs the reload command. When
 // SkipValidate is true it only copies the files.
-func Install(srcDir string, cfg InstallConfig) error {
+func Install(ctx context.Context, srcDir string, cfg InstallConfig) error {
 	destDir := cfg.OutputDir
 	if cfg.SkipValidate {
-		return copyNftFiles(srcDir, destDir)
+		_, end := callSpan(ctx, cfg.StartSpan, "nftables.copy")
+		err := copyNftFiles(srcDir, destDir)
+		end(err)
+		return err
 	}
 
 	includeDir := cfg.IncludeDir
@@ -44,11 +60,7 @@ func Install(srcDir string, cfg InstallConfig) error {
 		return fmt.Errorf("read %s: %w", cfg.NFTablesConfPath, err)
 	}
 
-	// Rewrite the production include directory to point at srcDir so the freshly
-	// generated files are validated in place. Normalize to a trailing slash so the
-	// replacement targets the directory prefix exactly.
-	includePrefix := strings.TrimRight(includeDir, "/") + "/"
-	patched := strings.ReplaceAll(string(confBytes), includePrefix, srcDir+"/")
+	patched := patchIncludePaths(string(confBytes), includeDir, srcDir)
 
 	tmpConf, err := os.CreateTemp("", "nftables-check-*.conf")
 	if err != nil {
@@ -62,21 +74,39 @@ func Install(srcDir string, cfg InstallConfig) error {
 	}
 	tmpConf.Close()
 
-	if out, err := exec.Command("nft", "-c", "-f", tmpConf.Name()).CombinedOutput(); err != nil {
+	_, endValidate := callSpan(ctx, cfg.StartSpan, "nftables.validate")
+	out, err := exec.CommandContext(ctx, "nft", "-c", "-f", tmpConf.Name()).CombinedOutput()
+	endValidate(err)
+	if err != nil {
 		return fmt.Errorf("nft -c -f validation failed: %w\n%s", err, out)
 	}
 
-	if err := copyNftFiles(srcDir, destDir); err != nil {
+	_, endCopy := callSpan(ctx, cfg.StartSpan, "nftables.copy")
+	err = copyNftFiles(srcDir, destDir)
+	endCopy(err)
+	if err != nil {
 		return err
 	}
 
 	if len(cfg.ReloadCommand) > 0 {
-		cmd := exec.Command(cfg.ReloadCommand[0], cfg.ReloadCommand[1:]...)
-		if out, err := cmd.CombinedOutput(); err != nil {
+		_, endReload := callSpan(ctx, cfg.StartSpan, "nftables.reload")
+		cmd := exec.CommandContext(ctx, cfg.ReloadCommand[0], cfg.ReloadCommand[1:]...)
+		out, err := cmd.CombinedOutput()
+		endReload(err)
+		if err != nil {
 			return fmt.Errorf("reload command %v: %w\n%s", cfg.ReloadCommand, err, out)
 		}
 	}
 	return nil
+}
+
+// patchIncludePaths rewrites the production include directory in an nftables config to
+// point at srcDir, so the freshly generated files are validated in place. The directory
+// is normalized to a trailing slash so the replacement targets the directory prefix
+// exactly rather than any path that merely starts with includeDir.
+func patchIncludePaths(conf, includeDir, srcDir string) string {
+	includePrefix := strings.TrimRight(includeDir, "/") + "/"
+	return strings.ReplaceAll(conf, includePrefix, strings.TrimRight(srcDir, "/")+"/")
 }
 
 func copyNftFiles(src, dst string) error {

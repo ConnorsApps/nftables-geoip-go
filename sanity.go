@@ -9,32 +9,30 @@ import (
 	"github.com/ConnorsApps/nftables-geoip-go/nftables"
 )
 
-const (
-	minIPv4InterestingEntries = 50_000
-	minIPv6InterestingEntries = 20_000
-	minDatacenterPrefixes     = 1_000
-	regressionThreshold       = 0.90
-)
+// regressionThreshold is the fraction of the previously-installed entry count a new
+// generation must reach. It self-calibrates to whatever a given deployment's normal size
+// is, so unlike an absolute floor it works for both small and large trusted sets.
+const regressionThreshold = 0.90
 
-// runSanityChecks verifies the generated files are plausible before replacing live ones.
+// runSanityChecks verifies the generated data is plausible before replacing live files.
+//
+// It deliberately avoids absolute floor counts (e.g. "at least 50k entries"), which bake
+// in an assumption about deployment scale and would reject a legitimately small trusted
+// set. Instead it relies on two self-scaling checks — the regression guard against the
+// last good install, and trusted-country presence — plus a total-failure guard on the
+// datacenter fetch.
 func runSanityChecks(
 	destDir string,
+	providerCount int,
 	v4InterestingCount, v6InterestingCount int,
 	datacenterCount int,
 	trustedAlpha2 map[string]bool,
 	v4Blocks, v6Blocks []country.Block,
 ) error {
-	// Absolute floor checks.
-	if v4InterestingCount < minIPv4InterestingEntries {
-		return fmt.Errorf("IPv4 interesting entries %d < minimum %d (catastrophic truncation?)", v4InterestingCount, minIPv4InterestingEntries)
-	}
-	if v6InterestingCount < minIPv6InterestingEntries {
-		return fmt.Errorf("IPv6 interesting entries %d < minimum %d (catastrophic truncation?)", v6InterestingCount, minIPv6InterestingEntries)
-	}
-
-	// Datacenter set non-empty.
-	if datacenterCount < minDatacenterPrefixes {
-		return fmt.Errorf("datacenter CIDR count %d < minimum %d (total provider fetch failure?)", datacenterCount, minDatacenterPrefixes)
+	// Total-failure guard: if providers are configured but every fetch produced nothing,
+	// installing would wipe the datacenter sets. A deliberately empty provider list is fine.
+	if providerCount > 0 && datacenterCount == 0 {
+		return fmt.Errorf("datacenter CIDR count is 0 with %d providers configured (total provider fetch failure?)", providerCount)
 	}
 
 	// Regression guard: new count must be >= 90% of existing deployed count.
@@ -60,7 +58,9 @@ func runSanityChecks(
 		}
 	}
 
-	// All trusted countries must appear in the interesting maps.
+	// All trusted countries must appear in the interesting maps. This also implies the
+	// interesting counts are non-zero for a non-empty trusted set, so no separate floor
+	// check is needed.
 	presentV4 := make(map[string]bool)
 	for _, b := range v4Blocks {
 		if trustedAlpha2[b.Alpha2] {

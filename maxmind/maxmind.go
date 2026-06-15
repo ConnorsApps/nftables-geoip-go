@@ -13,11 +13,42 @@ import (
 	"net/http"
 	"net/netip"
 	"path"
+	"strings"
 
 	"github.com/ConnorsApps/nftables-geoip-go/country"
 )
 
+// SpanHook starts a named span and returns an end function; see geoip.SpanHook.
+type SpanHook = func(ctx context.Context, name string) (context.Context, func(error))
+
+func callSpan(ctx context.Context, h SpanHook, name string) (context.Context, func(error)) {
+	if h == nil {
+		return ctx, func(error) {}
+	}
+	return h(ctx, name)
+}
+
 const urlTemplate = "https://download.maxmind.com/app/geoip_download?edition_id=GeoLite2-Country-CSV&license_key=%s&suffix=zip"
+
+// userAgent identifies this client to remote endpoints. Some providers (notably the
+// Microsoft download page scraped by the Azure provider) reject the default Go
+// user agent, so every request sends this instead.
+const userAgent = "nftables-geoip-go/1 (+https://github.com/ConnorsApps/nftables-geoip-go)"
+
+// redactKey hides the MaxMind license key in error messages. Transport errors from
+// net/http are *url.Error values whose text contains the full request URL — including
+// the license_key query parameter — so any error that may carry the URL must be passed
+// through here before it is returned or logged.
+func redactKey(err error, licenseKey string) error {
+	if err == nil || licenseKey == "" {
+		return err
+	}
+	msg := err.Error()
+	if !strings.Contains(msg, licenseKey) {
+		return err
+	}
+	return fmt.Errorf("%s", strings.ReplaceAll(msg, licenseKey, "REDACTED"))
+}
 
 // Result holds the parsed GeoLite2 Country data.
 type Result struct {
@@ -28,18 +59,23 @@ type Result struct {
 
 // Fetch downloads the GeoLite2 Country CSV bundle with the given client and license
 // key, then parses it. The client is supplied by the caller so transports (e.g. an
-// instrumented one) can be injected.
-func Fetch(ctx context.Context, client *http.Client, licenseKey string) (Result, error) {
+// instrumented one) can be injected. hook is optional; when non-nil it is called to
+// record a "maxmind.fetch" span covering the download and parse.
+func Fetch(ctx context.Context, client *http.Client, licenseKey string, hook SpanHook) (res Result, err error) {
+	ctx, end := callSpan(ctx, hook, "maxmind.fetch")
+	defer func() { end(err) }()
+
 	url := fmt.Sprintf(urlTemplate, licenseKey)
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
-		return Result{}, fmt.Errorf("build maxmind request: %w", err)
+		return Result{}, redactKey(fmt.Errorf("build maxmind request: %w", err), licenseKey)
 	}
+	req.Header.Set("User-Agent", userAgent)
 
 	resp, err := client.Do(req)
 	if err != nil {
-		return Result{}, fmt.Errorf("download maxmind: %w", err)
+		return Result{}, redactKey(fmt.Errorf("download maxmind: %w", err), licenseKey)
 	}
 	defer resp.Body.Close()
 
