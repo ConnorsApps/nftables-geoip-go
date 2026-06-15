@@ -1,0 +1,5 @@
+# Generated nftables output
+*.nft
+
+# Local environment
+.env
