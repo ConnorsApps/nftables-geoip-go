@@ -72,8 +72,7 @@ type Provider interface {
 |------|----------|
 | `geoip-def-all.nft` | all country `define`s, continent numerics, `continent_code` map |
 | `geoip-def-<continent>.nft` | per-continent country `define`s |
-| `geoip-ipv4.nft` / `geoip-ipv6.nft` | full CIDR → country-mark maps |
-| `geoip-ipv4-interesting.nft` / `geoip-ipv6-interesting.nft` | same, filtered to `TrustedCountries` |
+| `geoip-ipv4-interesting.nft` / `geoip-ipv6-interesting.nft` | CIDR → country-mark maps, filtered to `TrustedCountries` |
 | `datacenter-ipv4.nft` / `datacenter-ipv6.nft` | cloud-provider CIDR sets |
 
 Country marks are the ISO 3166-1 numeric code (US → 840); continent marks are 1–6

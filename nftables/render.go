@@ -28,12 +28,6 @@ func Render(dir string, in Input) error {
 	if err := generateDefFiles(dir, in.Locations); err != nil {
 		return fmt.Errorf("def files: %w", err)
 	}
-	if err := generateMapFile(dir, "geoip-ipv4.nft", "geoip4", "ipv4_addr", in.V4Blocks, nil); err != nil {
-		return fmt.Errorf("geoip-ipv4.nft: %w", err)
-	}
-	if err := generateMapFile(dir, "geoip-ipv6.nft", "geoip6", "ipv6_addr", in.V6Blocks, nil); err != nil {
-		return fmt.Errorf("geoip-ipv6.nft: %w", err)
-	}
 	if err := generateMapFile(dir, "geoip-ipv4-interesting.nft", "geoip4", "ipv4_addr", in.V4Blocks, in.TrustedAlpha2); err != nil {
 		return fmt.Errorf("geoip-ipv4-interesting.nft: %w", err)
 	}
