@@ -50,12 +50,14 @@ func TestGenerateMapFile(t *testing.T) {
 	if err := generateMapFile(dir, "geoip-ipv4.nft", "geoip4", "ipv4_addr", blocks, nil); err != nil {
 		t.Fatal(err)
 	}
+	// mergeBlocks sorts by address, so the lower-numbered 2.16.0.0/24 block sorts
+	// before 10.0.0.0/8 regardless of input order.
 	want := "map geoip4 {\n" +
 		"\ttype ipv4_addr : mark\n" +
 		"\tflags interval\n" +
 		"\telements = {\n" +
-		"\t\t10.0.0.0/8 : $US,\n" +
-		"\t\t2.16.0.0/24 : $DE\n" +
+		"\t\t2.16.0.0/24 : $DE,\n" +
+		"\t\t10.0.0.0/8 : $US\n" +
 		"\t}\n}\n"
 	if got := readGen(t, dir, "geoip-ipv4.nft"); got != want {
 		t.Errorf("unfiltered map mismatch:\n got: %q\nwant: %q", got, want)

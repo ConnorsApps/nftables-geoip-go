@@ -124,18 +124,20 @@ func generateMapFile(dir, filename, mapName, addrType string, blocks []country.B
 	buf.WriteString("\tflags interval\n")
 
 	// Collect the matching elements first: an empty `elements = { }` block is invalid
-	// nft syntax, so when there are none we emit only the declaration.
+	// nft syntax, so when there are none we emit only the declaration. Adjacent blocks
+	// of the same country are merged into address ranges, which cuts the element count
+	// (and the kernel's interval-set build cost) roughly in half on real GeoIP data.
+	merged := mergeBlocks(blocks, filterAlpha2)
 	var elems bytes.Buffer
-	first := true
-	for _, b := range blocks {
-		if filterAlpha2 != nil && !filterAlpha2[b.Alpha2] {
-			continue
-		}
-		if !first {
+	for i, r := range merged {
+		if i > 0 {
 			elems.WriteString(",\n")
 		}
-		fmt.Fprintf(&elems, "\t\t%s : $%s", b.Network.String(), b.Alpha2)
-		first = false
+		if r.Single() {
+			fmt.Fprintf(&elems, "\t\t%s : $%s", r.CIDR, r.Alpha2)
+		} else {
+			fmt.Fprintf(&elems, "\t\t%s-%s : $%s", r.From, r.To, r.Alpha2)
+		}
 	}
 	if elems.Len() > 0 {
 		buf.WriteString("\telements = {\n")

@@ -234,12 +234,11 @@ func (s *Syncer) Run(ctx context.Context) {
 	}
 }
 
+// countInteresting reports the number of nft map elements that will actually be
+// rendered for blocks restricted to trustedAlpha2. This must track whatever
+// generateMapFile produces (currently merged ranges, not one element per raw
+// block) so callers comparing this count against a previous generation - e.g.
+// the regression guard in runSanityChecks - compare like with like.
 func countInteresting(blocks []country.Block, trustedAlpha2 map[string]bool) int {
-	n := 0
-	for _, b := range blocks {
-		if trustedAlpha2[b.Alpha2] {
-			n++
-		}
-	}
-	return n
+	return nftables.CountMergedElements(blocks, trustedAlpha2)
 }

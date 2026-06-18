@@ -84,6 +84,19 @@ func TestRunSanityChecks_TrustedCountryMissingV6(t *testing.T) {
 	}
 }
 
+func TestCountInteresting_UsesMergedElementCount(t *testing.T) {
+	// Two adjacent US blocks merge into a single nft element. countInteresting
+	// must report the post-merge element count (1), not the raw block count (2),
+	// so the regression guard in runSanityChecks compares like with like.
+	blocks := []country.Block{
+		{Network: netip.MustParsePrefix("1.0.0.0/24"), Alpha2: "US"},
+		{Network: netip.MustParsePrefix("1.0.1.0/24"), Alpha2: "US"},
+	}
+	if got := countInteresting(blocks, trustedSet("US")); got != 1 {
+		t.Errorf("countInteresting = %d, want 1 (merged)", got)
+	}
+}
+
 func TestRunSanityChecks_RegressionGuard(t *testing.T) {
 	dir := t.TempDir()
 	// Seed an existing interesting map with 100k entries (lines containing " : $").
