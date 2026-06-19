@@ -32,7 +32,7 @@ func TestRunSanityChecks_Pass(t *testing.T) {
 	dir := t.TempDir() // empty: first run, no regression baseline
 	trusted := trustedSet("US", "DE")
 	// Small counts are fine — there are no absolute floors.
-	err := runSanityChecks(dir, 1 /* providers */, 5, 3, 7,
+	err := runSanityChecks(dir, map[string]int{"gcp": 7}, 5, 3,
 		trusted,
 		blocksFor("US", "DE"), blocksFor("US", "DE"),
 	)
@@ -46,15 +46,28 @@ func TestRunSanityChecks_DatacenterTotalFailure(t *testing.T) {
 	trusted := trustedSet("US")
 	blocks := blocksFor("US")
 
-	// Providers configured but zero datacenter CIDRs => total fetch failure.
-	err := runSanityChecks(dir, 1 /* providers */, 5, 3, 0, trusted, blocks, blocks)
-	if err == nil || !strings.Contains(err.Error(), "total provider fetch failure") {
+	// A configured provider returned zero datacenter CIDRs => total fetch failure for it.
+	err := runSanityChecks(dir, map[string]int{"gcp": 0}, 5, 3, trusted, blocks, blocks)
+	if err == nil || !strings.Contains(err.Error(), "total fetch failure for this provider") {
 		t.Fatalf("got %v, want a datacenter total-failure error", err)
 	}
 
-	// With no providers configured, a zero datacenter count is acceptable.
-	if err := runSanityChecks(dir, 0 /* providers */, 5, 3, 0, trusted, blocks, blocks); err != nil {
+	// With no providers configured, an empty map is acceptable.
+	if err := runSanityChecks(dir, map[string]int{}, 5, 3, trusted, blocks, blocks); err != nil {
 		t.Fatalf("expected pass with no providers, got %v", err)
+	}
+}
+
+func TestRunSanityChecks_PerProviderTotalFailure(t *testing.T) {
+	dir := t.TempDir()
+	trusted := trustedSet("US")
+	blocks := blocksFor("US")
+
+	// Aggregate count is nonzero (5), but "azure" individually contributed 0 — must
+	// still fail; an aggregate-only check would mask this.
+	err := runSanityChecks(dir, map[string]int{"gcp": 5, "azure": 0}, 5, 3, trusted, blocks, blocks)
+	if err == nil || !strings.Contains(err.Error(), "azure") {
+		t.Fatalf("got %v, want a per-provider failure mentioning azure", err)
 	}
 }
 
@@ -62,7 +75,7 @@ func TestRunSanityChecks_TrustedCountryMissing(t *testing.T) {
 	dir := t.TempDir()
 	trusted := trustedSet("US", "DE")
 	// DE is absent from the IPv4 blocks, so the IPv4 presence check must trip.
-	err := runSanityChecks(dir, 1, 5, 3, 7,
+	err := runSanityChecks(dir, map[string]int{"gcp": 7}, 5, 3,
 		trusted,
 		blocksFor("US"), blocksFor("US", "DE"),
 	)
@@ -75,7 +88,7 @@ func TestRunSanityChecks_TrustedCountryMissingV6(t *testing.T) {
 	dir := t.TempDir()
 	trusted := trustedSet("US", "DE")
 	// DE is present in IPv4 but absent from IPv6, so the IPv6 presence check must trip.
-	err := runSanityChecks(dir, 1, 5, 3, 7,
+	err := runSanityChecks(dir, map[string]int{"gcp": 7}, 5, 3,
 		trusted,
 		blocksFor("US", "DE"), blocksFor("US"),
 	)
@@ -110,7 +123,7 @@ func TestRunSanityChecks_RegressionGuard(t *testing.T) {
 	blocks := blocksFor("US")
 
 	// New count is far below 90% of the existing 100k.
-	err := runSanityChecks(dir, 1, 100, 50, 7, trusted, blocks, blocks)
+	err := runSanityChecks(dir, map[string]int{"gcp": 7}, 100, 50, trusted, blocks, blocks)
 	if err == nil || !strings.Contains(err.Error(), "90%") {
 		t.Fatalf("got %v, want a regression (90%%) error", err)
 	}

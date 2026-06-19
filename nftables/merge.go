@@ -5,6 +5,7 @@ import (
 	"sort"
 
 	"github.com/ConnorsApps/nftables-geoip-go/country"
+	"github.com/ConnorsApps/nftables-geoip-go/datacenter"
 )
 
 // rangeElem is a contiguous span of addresses attributed to a single country,
@@ -75,6 +76,64 @@ func mergeBlocks(blocks []country.Block, filterAlpha2 map[string]bool) []rangeEl
 
 		out = append(out, cur)
 		cur = rangeElem{From: from, To: to, Alpha2: b.Alpha2, CIDR: b.Network}
+	}
+	out = append(out, cur)
+
+	return out
+}
+
+// dcRangeElem is a contiguous span of addresses attributed to a single datacenter
+// provider, produced by merging one or more adjacent datacenter.Block entries.
+// Provider is the original Block.Provider name (used to look up the mark to render);
+// CIDR is set when the span came from exactly one input block.
+type dcRangeElem struct {
+	From, To netip.Addr
+	Provider string
+	CIDR     netip.Prefix
+}
+
+// Single reports whether this range came from exactly one input block.
+func (r dcRangeElem) Single() bool { return r.CIDR.IsValid() }
+
+// mergeDatacenterBlocks sorts blocks by address and coalesces runs that are both
+// contiguous and attributed to the same provider into a single dcRangeElem. Adjacent
+// blocks from different providers are never merged, even if contiguous in address
+// space, since they must render with different marks.
+func mergeDatacenterBlocks(blocks []datacenter.Block) []dcRangeElem {
+	if len(blocks) == 0 {
+		return nil
+	}
+
+	sorted := make([]datacenter.Block, len(blocks))
+	copy(sorted, blocks)
+	sort.Slice(sorted, func(i, j int) bool {
+		ai, aj := sorted[i].Network.Addr(), sorted[j].Network.Addr()
+		if ai != aj {
+			return ai.Less(aj)
+		}
+		return sorted[i].Network.Bits() < sorted[j].Network.Bits()
+	})
+
+	out := make([]dcRangeElem, 0, len(sorted))
+	cur := dcRangeElem{
+		From:     sorted[0].Network.Addr(),
+		To:       lastAddr(sorted[0].Network),
+		Provider: sorted[0].Provider,
+		CIDR:     sorted[0].Network,
+	}
+
+	for _, b := range sorted[1:] {
+		from := b.Network.Addr()
+		to := lastAddr(b.Network)
+
+		if b.Provider == cur.Provider && cur.To.Next() == from {
+			cur.To = to
+			cur.CIDR = netip.Prefix{}
+			continue
+		}
+
+		out = append(out, cur)
+		cur = dcRangeElem{From: from, To: to, Provider: b.Provider, CIDR: b.Network}
 	}
 	out = append(out, cur)
 

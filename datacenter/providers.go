@@ -216,26 +216,31 @@ func fetchBytes(ctx context.Context, client *http.Client, url string) ([]byte, e
 	return io.ReadAll(resp.Body)
 }
 
-// AggregatePrefixes sorts and removes covered prefixes from a list.
-func AggregatePrefixes(prefixes []netip.Prefix) []netip.Prefix {
-	if len(prefixes) == 0 {
+// AggregateBlocks sorts and removes covered/duplicate blocks. Overlaps between
+// different providers are not expected in practice (cloud IP ranges are allocated
+// from disjoint RIR blocks), but are handled deterministically: when two blocks from
+// different providers overlap, the one appearing first in sorted (address, then
+// prefix-length) order wins and the other is dropped — the same rule already used for
+// same-provider duplicates.
+func AggregateBlocks(blocks []Block) []Block {
+	if len(blocks) == 0 {
 		return nil
 	}
-	sort.Slice(prefixes, func(i, j int) bool {
-		if c := prefixes[i].Addr().Compare(prefixes[j].Addr()); c != 0 {
+	sort.Slice(blocks, func(i, j int) bool {
+		if c := blocks[i].Network.Addr().Compare(blocks[j].Network.Addr()); c != 0 {
 			return c < 0
 		}
-		return prefixes[i].Bits() < prefixes[j].Bits()
+		return blocks[i].Network.Bits() < blocks[j].Network.Bits()
 	})
 
-	result := []netip.Prefix{prefixes[0]}
-	for _, p := range prefixes[1:] {
+	result := []Block{blocks[0]}
+	for _, b := range blocks[1:] {
 		last := result[len(result)-1]
-		// Skip if p is an exact duplicate or covered by last.
-		if last.Contains(p.Addr()) && p.Bits() >= last.Bits() {
+		// Skip if b is an exact duplicate or covered by last.
+		if last.Network.Contains(b.Network.Addr()) && b.Network.Bits() >= last.Network.Bits() {
 			continue
 		}
-		result = append(result, p)
+		result = append(result, b)
 	}
 	return result
 }

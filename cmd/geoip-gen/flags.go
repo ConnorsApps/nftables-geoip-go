@@ -10,10 +10,11 @@ import (
 type flags struct {
 	*flag.FlagSet
 
-	out          string
-	countries    string
-	providers    string
-	skipValidate bool
+	out                        string
+	countries                  string
+	providers                  string
+	allowedDatacenterProviders string
+	skipValidate               bool
 	nftablesConf string
 	includeDir   string
 	logLevel     string
@@ -34,6 +35,8 @@ func newFlagSet() *flags {
 		"comma-separated trusted country ISO alpha-2 codes [GEOIP_COUNTRIES]")
 	fs.StringVar(&fs.providers, "providers", env("GEOIP_PROVIDERS", "all"),
 		"comma-separated datacenter providers: aws,gcp,digitalocean,azure | all | none [GEOIP_PROVIDERS]")
+	fs.StringVar(&fs.allowedDatacenterProviders, "allowed-datacenter-providers", env("GEOIP_ALLOWED_DATACENTER_PROVIDERS", "gcp"),
+		"comma-separated datacenter providers that get an individually-allowed mark instead of the generic blocked mark (0xdead) [GEOIP_ALLOWED_DATACENTER_PROVIDERS]")
 	fs.BoolVar(&fs.skipValidate, "skip-validate", envBool("GEOIP_SKIP_VALIDATE", true),
 		"skip the `nft -c` validation and reload (for machines without nftables) [GEOIP_SKIP_VALIDATE]")
 	fs.StringVar(&fs.nftablesConf, "nftables-conf", env("GEOIP_NFTABLES_CONF", ""),

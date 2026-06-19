@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/ConnorsApps/nftables-geoip-go/country"
+	"github.com/ConnorsApps/nftables-geoip-go/datacenter"
 )
 
 func readGen(t *testing.T, dir, name string) string {
@@ -17,19 +18,6 @@ func readGen(t *testing.T, dir, name string) string {
 		t.Fatalf("read %s: %v", name, err)
 	}
 	return string(data)
-}
-
-func prefixes(t *testing.T, cidrs ...string) []netip.Prefix {
-	t.Helper()
-	out := make([]netip.Prefix, len(cidrs))
-	for i, c := range cidrs {
-		p, err := netip.ParsePrefix(c)
-		if err != nil {
-			t.Fatalf("bad test CIDR %q: %v", c, err)
-		}
-		out[i] = p
-	}
-	return out
 }
 
 func trustedSet(codes ...string) map[string]bool {
@@ -105,36 +93,89 @@ func TestGenerateMapFileEmpty(t *testing.T) {
 	}
 }
 
-func TestGenerateDatacenterSetEmpty(t *testing.T) {
+func TestGenerateDatacenterMapEmpty(t *testing.T) {
 	dir := t.TempDir()
-	if err := generateDatacenterSet(dir, "empty.nft", "datacenter4", "ipv4_addr", nil); err != nil {
+	if err := generateDatacenterMap(dir, "empty.nft", "datacenter4", "ipv4_addr", nil, nil); err != nil {
 		t.Fatal(err)
 	}
-	want := "set datacenter4 {\n" +
-		"\ttype ipv4_addr\n" +
+	want := "map datacenter4 {\n" +
+		"\ttype ipv4_addr : mark\n" +
 		"\tflags interval\n" +
 		"}\n"
 	if got := readGen(t, dir, "empty.nft"); got != want {
-		t.Errorf("empty set mismatch:\n got: %q\nwant: %q", got, want)
+		t.Errorf("empty map mismatch:\n got: %q\nwant: %q", got, want)
 	}
 }
 
-func TestGenerateDatacenterSet(t *testing.T) {
+func TestGenerateDatacenterMap_UnknownProviderFallsBackToDead(t *testing.T) {
 	dir := t.TempDir()
-	pfxs := prefixes(t, "10.0.0.0/8", "192.168.0.0/16")
+	blocks := []datacenter.Block{
+		{Network: netip.MustParsePrefix("10.0.0.0/8"), Provider: "aws"},
+		{Network: netip.MustParsePrefix("192.168.0.0/16"), Provider: "azure"},
+	}
 
-	if err := generateDatacenterSet(dir, "datacenter-ipv4.nft", "datacenter4", "ipv4_addr", pfxs); err != nil {
+	// No allowed providers: everything falls back to the generic blocked mark.
+	if err := generateDatacenterMap(dir, "datacenter-ipv4.nft", "datacenter4", "ipv4_addr", blocks, nil); err != nil {
 		t.Fatal(err)
 	}
-	want := "set datacenter4 {\n" +
-		"\ttype ipv4_addr\n" +
+	want := "map datacenter4 {\n" +
+		"\ttype ipv4_addr : mark\n" +
 		"\tflags interval\n" +
 		"\telements = {\n" +
-		"\t\t10.0.0.0/8,\n" +
-		"\t\t192.168.0.0/16\n" +
+		"\t\t10.0.0.0/8 : 0xdead,\n" +
+		"\t\t192.168.0.0/16 : 0xdead\n" +
 		"\t}\n}\n"
 	if got := readGen(t, dir, "datacenter-ipv4.nft"); got != want {
-		t.Errorf("datacenter set mismatch:\n got: %q\nwant: %q", got, want)
+		t.Errorf("datacenter map mismatch:\n got: %q\nwant: %q", got, want)
+	}
+}
+
+func TestGenerateDatacenterMap_GCPAllowed(t *testing.T) {
+	dir := t.TempDir()
+	blocks := []datacenter.Block{
+		{Network: netip.MustParsePrefix("10.0.0.0/8"), Provider: "aws"},
+		{Network: netip.MustParsePrefix("34.64.0.0/10"), Provider: "gcp"},
+	}
+
+	if err := generateDatacenterMap(dir, "datacenter-ipv4.nft", "datacenter4", "ipv4_addr", blocks, map[string]bool{"gcp": true}); err != nil {
+		t.Fatal(err)
+	}
+	want := "map datacenter4 {\n" +
+		"\ttype ipv4_addr : mark\n" +
+		"\tflags interval\n" +
+		"\telements = {\n" +
+		"\t\t10.0.0.0/8 : 0xdead,\n" +
+		"\t\t34.64.0.0/10 : $GCP\n" +
+		"\t}\n}\n"
+	if got := readGen(t, dir, "datacenter-ipv4.nft"); got != want {
+		t.Errorf("datacenter map mismatch:\n got: %q\nwant: %q", got, want)
+	}
+}
+
+func TestMergeDatacenterBlocks_DoesNotMergeAcrossProviders(t *testing.T) {
+	// Adjacent CIDRs from different providers must not merge into one range, even
+	// though they're contiguous in address space.
+	blocks := []datacenter.Block{
+		{Network: netip.MustParsePrefix("10.0.0.0/24"), Provider: "aws"},
+		{Network: netip.MustParsePrefix("10.0.1.0/24"), Provider: "gcp"},
+	}
+	got := mergeDatacenterBlocks(blocks)
+	if len(got) != 2 {
+		t.Fatalf("got %d merged ranges, want 2 (no cross-provider merge)", len(got))
+	}
+}
+
+func TestMergeDatacenterBlocks_MergesAdjacentSameProvider(t *testing.T) {
+	blocks := []datacenter.Block{
+		{Network: netip.MustParsePrefix("10.0.0.0/24"), Provider: "gcp"},
+		{Network: netip.MustParsePrefix("10.0.1.0/24"), Provider: "gcp"},
+	}
+	got := mergeDatacenterBlocks(blocks)
+	if len(got) != 1 {
+		t.Fatalf("got %d merged ranges, want 1 (adjacent same-provider blocks merge)", len(got))
+	}
+	if got[0].Single() {
+		t.Errorf("merged range should not report Single() once coalesced")
 	}
 }
 
@@ -165,6 +206,8 @@ func TestGenerateDefFiles(t *testing.T) {
 		"\t\t$US : $americas",
 		"\t\t$DE : $europe,",
 		"\t\t$JP : $asia,",
+		"define GCP = 55810\n",
+		"define AWS = 55809\n",
 	} {
 		if !strings.Contains(all, want) {
 			t.Errorf("geoip-def-all.nft missing %q", want)

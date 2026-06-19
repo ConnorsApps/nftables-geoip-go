@@ -5,12 +5,12 @@ package nftables
 import (
 	"bytes"
 	"fmt"
-	"net/netip"
 	"os"
 	"path/filepath"
 	"sort"
 
 	"github.com/ConnorsApps/nftables-geoip-go/country"
+	"github.com/ConnorsApps/nftables-geoip-go/datacenter"
 )
 
 // Input is the data rendered into the .nft files.
@@ -19,8 +19,12 @@ type Input struct {
 	V6Blocks      []country.Block
 	Locations     country.Locations
 	TrustedAlpha2 map[string]bool // ISO alpha-2 (upper-case) to include in the "interesting" maps
-	DatacenterV4  []netip.Prefix
-	DatacenterV6  []netip.Prefix
+	DatacenterV4  []datacenter.Block
+	DatacenterV6  []datacenter.Block
+	// AllowedDatacenterProviders lists provider names (lower-case, matching
+	// datacenter.Block.Provider) that get their own mark in the rendered datacenter
+	// maps. Datacenter blocks for any other provider render with datacenter.BlockedMark.
+	AllowedDatacenterProviders map[string]bool
 }
 
 // Render writes all .nft files into dir.
@@ -34,10 +38,10 @@ func Render(dir string, in Input) error {
 	if err := generateMapFile(dir, "geoip-ipv6-interesting.nft", "geoip6", "ipv6_addr", in.V6Blocks, in.TrustedAlpha2); err != nil {
 		return fmt.Errorf("geoip-ipv6-interesting.nft: %w", err)
 	}
-	if err := generateDatacenterSet(dir, "datacenter-ipv4.nft", "datacenter4", "ipv4_addr", in.DatacenterV4); err != nil {
+	if err := generateDatacenterMap(dir, "datacenter-ipv4.nft", "datacenter4", "ipv4_addr", in.DatacenterV4, in.AllowedDatacenterProviders); err != nil {
 		return fmt.Errorf("datacenter-ipv4.nft: %w", err)
 	}
-	if err := generateDatacenterSet(dir, "datacenter-ipv6.nft", "datacenter6", "ipv6_addr", in.DatacenterV6); err != nil {
+	if err := generateDatacenterMap(dir, "datacenter-ipv6.nft", "datacenter6", "ipv6_addr", in.DatacenterV6, in.AllowedDatacenterProviders); err != nil {
 		return fmt.Errorf("datacenter-ipv6.nft: %w", err)
 	}
 	return nil
@@ -112,7 +116,43 @@ func generateDefFiles(dir string, locs country.Locations) error {
 	}
 	buf.WriteString("\n\t}\n}\n")
 
+	// Datacenter provider defines, sourced from the datacenter package's registry so
+	// it stays single-sourced. Written into the same include already loaded by both
+	// table inet geoip and table inet filter, so no new include is needed.
+	codes := datacenter.Codes()
+	providers := make([]string, 0, len(codes))
+	for p := range codes {
+		providers = append(providers, p)
+	}
+	sort.Strings(providers)
+	buf.WriteString("\n")
+	for _, p := range providers {
+		fmt.Fprintf(&buf, "define %s = %d\n", datacenterDefineName(p), codes[p])
+	}
+
 	return os.WriteFile(filepath.Join(dir, "geoip-def-all.nft"), buf.Bytes(), 0644)
+}
+
+// datacenterDefineName returns the nft define identifier for a datacenter provider,
+// e.g. "GCP" for "gcp".
+func datacenterDefineName(provider string) string {
+	out := []byte(provider)
+	for i, c := range out {
+		if c >= 'a' && c <= 'z' {
+			out[i] = c - 'a' + 'A'
+		}
+	}
+	return string(out)
+}
+
+// datacenterMarkDefine returns the nft expression for a datacenter block's mark: the
+// provider's own define (e.g. "$GCP") if it's individually allowed, else the literal
+// blocked-datacenter sentinel.
+func datacenterMarkDefine(provider string, allowed map[string]bool) string {
+	if allowed[provider] {
+		return "$" + datacenterDefineName(provider)
+	}
+	return fmt.Sprintf("%#x", datacenter.BlockedMark)
 }
 
 func generateMapFile(dir, filename, mapName, addrType string, blocks []country.Block, filterAlpha2 map[string]bool) error {
@@ -149,24 +189,32 @@ func generateMapFile(dir, filename, mapName, addrType string, blocks []country.B
 	return os.WriteFile(filepath.Join(dir, filename), buf.Bytes(), 0644)
 }
 
-func generateDatacenterSet(dir, filename, setName, addrType string, prefixes []netip.Prefix) error {
+func generateDatacenterMap(dir, filename, mapName, addrType string, blocks []datacenter.Block, allowed map[string]bool) error {
 	var buf bytes.Buffer
-	buf.WriteString("set ")
-	buf.WriteString(setName)
+	buf.WriteString("map ")
+	buf.WriteString(mapName)
 	buf.WriteString(" {\n")
-	fmt.Fprintf(&buf, "\ttype %s\n", addrType)
+	fmt.Fprintf(&buf, "\ttype %s : mark\n", addrType)
 	buf.WriteString("\tflags interval\n")
 
 	// An empty `elements = { }` block is invalid nft syntax, so omit it entirely when
-	// there are no prefixes (e.g. -providers none, or a provider with no IPv6 ranges).
-	if len(prefixes) > 0 {
-		buf.WriteString("\telements = {\n")
-		for i, pfx := range prefixes {
-			if i > 0 {
-				buf.WriteString(",\n")
-			}
-			fmt.Fprintf(&buf, "\t\t%s", pfx.String())
+	// there are no blocks (e.g. -providers none, or a provider with no IPv6 ranges).
+	merged := mergeDatacenterBlocks(blocks)
+	var elems bytes.Buffer
+	for i, r := range merged {
+		if i > 0 {
+			elems.WriteString(",\n")
 		}
+		mark := datacenterMarkDefine(r.Provider, allowed)
+		if r.Single() {
+			fmt.Fprintf(&elems, "\t\t%s : %s", r.CIDR, mark)
+		} else {
+			fmt.Fprintf(&elems, "\t\t%s-%s : %s", r.From, r.To, mark)
+		}
+	}
+	if elems.Len() > 0 {
+		buf.WriteString("\telements = {\n")
+		buf.Write(elems.Bytes())
 		buf.WriteString("\n\t}\n")
 	}
 	buf.WriteString("}\n")

@@ -23,16 +23,19 @@ const regressionThreshold = 0.90
 // datacenter fetch.
 func runSanityChecks(
 	destDir string,
-	providerCount int,
+	datacenterByProvider map[string]int,
 	v4InterestingCount, v6InterestingCount int,
-	datacenterCount int,
 	trustedAlpha2 map[string]bool,
 	v4Blocks, v6Blocks []country.Block,
 ) error {
-	// Total-failure guard: if providers are configured but every fetch produced nothing,
-	// installing would wipe the datacenter sets. A deliberately empty provider list is fine.
-	if providerCount > 0 && datacenterCount == 0 {
-		return fmt.Errorf("datacenter CIDR count is 0 with %d providers configured (total provider fetch failure?)", providerCount)
+	// Per-provider total-failure guard: every configured provider must individually
+	// yield at least one CIDR, so one dark feed can't be masked by the others'
+	// contributions to an aggregate count (which would let installing silently wipe
+	// that provider's coverage).
+	for provider, count := range datacenterByProvider {
+		if count == 0 {
+			return fmt.Errorf("datacenter provider %s returned 0 CIDRs (total fetch failure for this provider?)", provider)
+		}
 	}
 
 	// Regression guard: new count must be >= 90% of existing deployed count.

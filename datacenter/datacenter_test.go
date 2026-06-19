@@ -1,6 +1,8 @@
 package datacenter
 
 import (
+	"context"
+	"net/http"
 	"net/netip"
 	"reflect"
 	"testing"
@@ -19,7 +21,27 @@ func prefixes(t *testing.T, cidrs ...string) []netip.Prefix {
 	return out
 }
 
-func TestAggregatePrefixes(t *testing.T) {
+// blocksOf attributes every prefix to the given provider, for tests that don't care
+// about cross-provider behavior.
+func blocksOf(t *testing.T, provider string, cidrs ...string) []Block {
+	t.Helper()
+	pfxs := prefixes(t, cidrs...)
+	out := make([]Block, len(pfxs))
+	for i, p := range pfxs {
+		out[i] = Block{Network: p, Provider: provider, Code: codeByProvider[provider]}
+	}
+	return out
+}
+
+func networksOf(blocks []Block) []netip.Prefix {
+	out := make([]netip.Prefix, len(blocks))
+	for i, b := range blocks {
+		out[i] = b.Network
+	}
+	return out
+}
+
+func TestAggregateBlocks(t *testing.T) {
 	tests := []struct {
 		name string
 		in   []string
@@ -59,19 +81,72 @@ func TestAggregatePrefixes(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := AggregatePrefixes(prefixes(t, tt.in...))
+			got := networksOf(AggregateBlocks(blocksOf(t, "gcp", tt.in...)))
 			if len(tt.want) == 0 {
 				if len(got) != 0 {
-					t.Errorf("AggregatePrefixes(%v) = %v, want empty", tt.in, got)
+					t.Errorf("AggregateBlocks(%v) = %v, want empty", tt.in, got)
 				}
 				return
 			}
 			want := prefixes(t, tt.want...)
 			if !reflect.DeepEqual(got, want) {
-				t.Errorf("AggregatePrefixes(%v) = %v, want %v", tt.in, got, want)
+				t.Errorf("AggregateBlocks(%v) = %v, want %v", tt.in, got, want)
 			}
 		})
 	}
+}
+
+func TestAggregateBlocks_CrossProviderOverlapFirstWins(t *testing.T) {
+	// Two different providers publishing the same prefix should never happen in
+	// practice, but must resolve deterministically: sort order (address, then
+	// prefix length) decides, same as the same-provider case.
+	blocks := []Block{
+		{Network: netip.MustParsePrefix("10.0.0.0/8"), Provider: "aws", Code: CodeAWS},
+		{Network: netip.MustParsePrefix("10.0.0.0/8"), Provider: "gcp", Code: CodeGCP},
+	}
+	got := AggregateBlocks(blocks)
+	if len(got) != 1 {
+		t.Fatalf("got %d blocks, want 1", len(got))
+	}
+	if got[0].Provider != "aws" {
+		t.Errorf("provider = %q, want %q (first in sort order)", got[0].Provider, "aws")
+	}
+}
+
+func TestFetch_AttributesProviderAndCode(t *testing.T) {
+	v4, _, errs := Fetch(context.Background(), http.DefaultClient, []Provider{fakeProvider{name: "gcp", v4: prefixes(t, "34.0.0.0/8")}}, nil)
+	if len(errs) != 0 {
+		t.Fatalf("unexpected errs: %v", errs)
+	}
+	if len(v4) != 1 {
+		t.Fatalf("got %d blocks, want 1", len(v4))
+	}
+	if v4[0].Provider != "gcp" || v4[0].Code != CodeGCP {
+		t.Errorf("got Provider=%q Code=%#x, want Provider=gcp Code=%#x", v4[0].Provider, v4[0].Code, CodeGCP)
+	}
+}
+
+func TestFetch_UnknownProviderGetsZeroCode(t *testing.T) {
+	v4, _, errs := Fetch(context.Background(), http.DefaultClient, []Provider{fakeProvider{name: "custom-feed", v4: prefixes(t, "203.0.113.0/24")}}, nil)
+	if len(errs) != 0 {
+		t.Fatalf("unexpected errs: %v", errs)
+	}
+	if len(v4) != 1 {
+		t.Fatalf("got %d blocks, want 1", len(v4))
+	}
+	if v4[0].Code != 0 {
+		t.Errorf("got Code=%#x for unknown provider, want 0", v4[0].Code)
+	}
+}
+
+type fakeProvider struct {
+	name string
+	v4   []netip.Prefix
+}
+
+func (f fakeProvider) Name() string { return f.name }
+func (f fakeProvider) Fetch(ctx context.Context, client *http.Client) ([]netip.Prefix, []netip.Prefix, error) {
+	return f.v4, nil, nil
 }
 
 func TestParseAWS(t *testing.T) {

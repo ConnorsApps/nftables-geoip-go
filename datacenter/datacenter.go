@@ -39,12 +39,20 @@ func Default() []Provider {
 	return []Provider{AWS{}, GCP{}, DigitalOcean{}, Azure{}}
 }
 
+// Block is a single CIDR network attributed to a datacenter provider.
+type Block struct {
+	Network  netip.Prefix
+	Provider string // Provider.Name(), e.g. "gcp"
+	Code     uint32 // nft mark value for this provider, e.g. 0xda02 for gcp; 0 if unknown
+}
+
 // Fetch fetches CIDR ranges from every provider and returns the aggregated IPv4 and
-// IPv6 prefix sets. Each provider is bounded by an individual timeout. Per-provider
-// failures are returned (not fatal); successful providers still contribute, so the
-// caller should decide whether the combined result is acceptable. hook is optional;
-// when non-nil a "datacenter.<name>" span is recorded for each provider.
-func Fetch(ctx context.Context, client *http.Client, providers []Provider, hook SpanHook) (v4, v6 []netip.Prefix, errs []error) {
+// IPv6 blocks, each attributed to its source provider. Each provider is bounded by an
+// individual timeout. Per-provider failures are returned (not fatal); successful
+// providers still contribute, so the caller should decide whether the combined result
+// is acceptable. hook is optional; when non-nil a "datacenter.<name>" span is recorded
+// for each provider.
+func Fetch(ctx context.Context, client *http.Client, providers []Provider, hook SpanHook) (v4, v6 []Block, errs []error) {
 	for _, p := range providers {
 		pctx, cancel := context.WithTimeout(ctx, providerTimeout)
 		pctx, end := callSpan(pctx, hook, "datacenter."+p.Name())
@@ -55,11 +63,16 @@ func Fetch(ctx context.Context, client *http.Client, providers []Provider, hook 
 			errs = append(errs, fmt.Errorf("%s: %w", p.Name(), err))
 			continue
 		}
-		v4 = append(v4, pv4...)
-		v6 = append(v6, pv6...)
+		code := codeByProvider[p.Name()]
+		for _, pfx := range pv4 {
+			v4 = append(v4, Block{Network: pfx, Provider: p.Name(), Code: code})
+		}
+		for _, pfx := range pv6 {
+			v6 = append(v6, Block{Network: pfx, Provider: p.Name(), Code: code})
+		}
 	}
 
-	v4 = AggregatePrefixes(v4)
-	v6 = AggregatePrefixes(v6)
+	v4 = AggregateBlocks(v4)
+	v6 = AggregateBlocks(v6)
 	return v4, v6, errs
 }

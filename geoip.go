@@ -55,14 +55,19 @@ type Config struct {
 
 	// Providers selects the datacenter CIDR sources. default: datacenter.Default().
 	Providers []datacenter.Provider
+	// AllowedDatacenterProviders lists provider names (matching Provider.Name(), e.g.
+	// "gcp") whose CIDRs get their own mark instead of the generic blocked-datacenter
+	// mark. default: none (every datacenter provider is blocked).
+	AllowedDatacenterProviders []string
 	// SyncInterval is how often Run repeats after the initial sync. default: 7 days.
 	SyncInterval time.Duration
 }
 
 // Syncer downloads and installs updated GeoIP data on a schedule.
 type Syncer struct {
-	cfg           Config
-	trustedAlpha2 map[string]bool
+	cfg                        Config
+	trustedAlpha2              map[string]bool
+	allowedDatacenterProviders map[string]bool
 
 	client    *http.Client
 	log       *slog.Logger
@@ -99,13 +104,19 @@ func New(cfg Config) *Syncer {
 		trusted[strings.ToUpper(c)] = true
 	}
 
+	allowedDC := make(map[string]bool, len(cfg.AllowedDatacenterProviders))
+	for _, p := range cfg.AllowedDatacenterProviders {
+		allowedDC[strings.ToLower(p)] = true
+	}
+
 	return &Syncer{
-		cfg:           cfg,
-		trustedAlpha2: trusted,
-		client:        cfg.HTTPClient,
-		log:           cfg.Logger,
-		startSpan:     cfg.StartSpan,
-		onSync:        cfg.OnSync,
+		cfg:                        cfg,
+		trustedAlpha2:              trusted,
+		allowedDatacenterProviders: allowedDC,
+		client:                     cfg.HTTPClient,
+		log:                        cfg.Logger,
+		startSpan:                  cfg.StartSpan,
+		onSync:                     cfg.OnSync,
 	}
 }
 
@@ -160,11 +171,24 @@ func (s *Syncer) doSync(ctx context.Context) error {
 	v4Interesting := countInteresting(mm.V4, s.trustedAlpha2)
 	v6Interesting := countInteresting(mm.V6, s.trustedAlpha2)
 
+	// Seed every configured provider at 0 before counting so a provider whose fetch
+	// errored (and therefore contributed no blocks) is indistinguishable from, and
+	// equally caught as, one that fetched successfully but returned nothing.
+	datacenterByProvider := make(map[string]int, len(s.cfg.Providers))
+	for _, p := range s.cfg.Providers {
+		datacenterByProvider[p.Name()] = 0
+	}
+	for _, b := range dcV4 {
+		datacenterByProvider[b.Provider]++
+	}
+	for _, b := range dcV6 {
+		datacenterByProvider[b.Provider]++
+	}
+
 	if err := runSanityChecks(
 		s.cfg.OutputDir,
-		len(s.cfg.Providers),
+		datacenterByProvider,
 		v4Interesting, v6Interesting,
-		len(dcV4)+len(dcV6),
 		s.trustedAlpha2,
 		mm.V4, mm.V6,
 	); err != nil {
@@ -183,12 +207,13 @@ func (s *Syncer) doSync(ctx context.Context) error {
 	defer os.RemoveAll(tmpDir)
 
 	if err := nftables.Render(tmpDir, nftables.Input{
-		V4Blocks:      mm.V4,
-		V6Blocks:      mm.V6,
-		Locations:     mm.Locations,
-		TrustedAlpha2: s.trustedAlpha2,
-		DatacenterV4:  dcV4,
-		DatacenterV6:  dcV6,
+		V4Blocks:                   mm.V4,
+		V6Blocks:                   mm.V6,
+		Locations:                  mm.Locations,
+		TrustedAlpha2:              s.trustedAlpha2,
+		DatacenterV4:               dcV4,
+		DatacenterV6:               dcV6,
+		AllowedDatacenterProviders: s.allowedDatacenterProviders,
 	}); err != nil {
 		return fmt.Errorf("generate files: %w", err)
 	}

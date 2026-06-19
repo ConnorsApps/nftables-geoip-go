@@ -114,9 +114,50 @@ func TestSync_EndToEnd(t *testing.T) {
 		t.Errorf("ipv4 interesting map missing expected entries:\n%s", v4)
 	}
 
+	// AWS is not in the default AllowedDatacenterProviders, so its prefix renders with
+	// the generic blocked mark, not its own.
 	dc4 := readFile(t, outDir, "datacenter-ipv4.nft")
-	if !strings.Contains(dc4, "13.34.0.0/16") {
-		t.Errorf("datacenter ipv4 set missing AWS prefix:\n%s", dc4)
+	if !strings.Contains(dc4, "13.34.0.0/16 : 0xdead") {
+		t.Errorf("datacenter ipv4 map missing blocked AWS prefix:\n%s", dc4)
+	}
+}
+
+func TestSync_AllowedDatacenterProviderGetsOwnMark(t *testing.T) {
+	zipBytes := buildTestMaxMindZip(t)
+	awsJSON := `{"prefixes":[{"ip_prefix":"13.34.0.0/16"}],"ipv6_prefixes":[]}`
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case strings.Contains(r.URL.RawQuery, "geoip_download"), strings.Contains(r.URL.Path, "geoip_download"):
+			w.Write(zipBytes)
+		case strings.Contains(r.URL.Path, "aws"):
+			w.Write([]byte(awsJSON))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+
+	base, _ := url.Parse(srv.URL)
+	client := &http.Client{Transport: rewriteTransport{base: base}}
+
+	outDir := t.TempDir()
+	s := New(Config{
+		OutputDir:                  outDir,
+		TrustedCountries:           []string{"us", "de"},
+		MaxMindLicenseKey:          "test-key",
+		SkipValidate:               true,
+		HTTPClient:                 client,
+		Providers:                  []datacenter.Provider{testAWS{url: srv.URL + "/aws"}},
+		AllowedDatacenterProviders: []string{"aws"},
+	})
+
+	if err := s.Sync(context.Background()); err != nil {
+		t.Fatalf("Sync: %v", err)
+	}
+
+	dc4 := readFile(t, outDir, "datacenter-ipv4.nft")
+	if !strings.Contains(dc4, "13.34.0.0/16 : $AWS") {
+		t.Errorf("datacenter ipv4 map missing allowed AWS prefix with its own mark:\n%s", dc4)
 	}
 }
 

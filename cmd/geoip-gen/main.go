@@ -51,14 +51,15 @@ func run() error {
 	}
 
 	cfg := geoip.Config{
-		OutputDir:         fs.out,
-		TrustedCountries:  splitCSV(fs.countries),
-		MaxMindLicenseKey: licenseKey,
-		SkipValidate:      fs.skipValidate,
-		Logger:            logger,
-		Providers:         providers,
-		NFTablesConfPath:  fs.nftablesConf,
-		IncludeDir:        fs.includeDir,
+		OutputDir:                  fs.out,
+		TrustedCountries:           splitCSV(fs.countries),
+		MaxMindLicenseKey:          licenseKey,
+		SkipValidate:               fs.skipValidate,
+		Logger:                     logger,
+		Providers:                  providers,
+		AllowedDatacenterProviders: splitCSV(fs.allowedDatacenterProviders),
+		NFTablesConfPath:           fs.nftablesConf,
+		IncludeDir:                 fs.includeDir,
 	}
 
 	if err := geoip.New(cfg).Sync(context.Background()); err != nil {
